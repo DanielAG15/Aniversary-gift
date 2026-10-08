@@ -209,27 +209,66 @@ function extractYouTubeStart(url){
   }catch{return 0}
 }
 
-function getYouTubeEmbedUrl(url, autoplay=false){
-  const videoId=extractYouTubeVideoId(DATA.song.youtubeUrl || "");
-  if(!videoId)return "";
-  const start=extractYouTubeStart(url || "");
-  const params=new URLSearchParams({
-    autoplay: autoplay ? "1" : "0",
-    rel: "0",
-    playsinline: "1",
-    modestbranding: "1"
+let youtubeApiPromise;
+let youtubePlayer;
+let youtubePlayerReady;
+
+function loadYouTubeApi(){
+  if(window.YT?.Player)return Promise.resolve(window.YT);
+  if(youtubeApiPromise)return youtubeApiPromise;
+  youtubeApiPromise=new Promise((resolve,reject)=>{
+    const existing=document.querySelector('script[src="https://www.youtube.com/iframe_api"]');
+    const previous=window.onYouTubeIframeAPIReady;
+    window.onYouTubeIframeAPIReady=()=>{
+      previous?.();
+      resolve(window.YT);
+    };
+    if(existing)return;
+    const script=document.createElement("script");
+    script.src="https://www.youtube.com/iframe_api";
+    script.onerror=()=>reject(new Error("No se pudo cargar YouTube"));
+    document.head.appendChild(script);
   });
-  if(start > 0)params.set("start", String(start));
-  return `https://www.youtube.com/embed/${videoId}?${params.toString()}`;
+  return youtubeApiPromise;
+}
+
+async function ensureYouTubePlayer(){
+  if(youtubePlayerReady)return youtubePlayerReady;
+  const videoId=extractYouTubeVideoId(DATA.song.youtubeUrl || "");
+  if(!videoId)throw new Error("URL de YouTube inválida");
+  youtubePlayerReady=loadYouTubeApi().then(YT=>new Promise((resolve,reject)=>{
+    youtubePlayer=new YT.Player("youtubeEmbed",{
+      width:"100%",
+      height:"100%",
+      videoId,
+      playerVars:{
+        autoplay:0,
+        controls:1,
+        rel:0,
+        playsinline:1,
+        modestbranding:1,
+        start:extractYouTubeStart(DATA.song.youtubeUrl || "")
+      },
+      events:{
+        onReady:()=>{
+          const iframe=youtubePlayer.getIframe();
+          if(iframe)iframe.setAttribute("allow","autoplay; encrypted-media; picture-in-picture");
+          resolve(youtubePlayer);
+        },
+        onStateChange:event=>{
+          const state=event.data;
+          updateMusicUi(state===YT.PlayerState.PLAYING || state===YT.PlayerState.BUFFERING);
+        },
+        onError:()=>reject(new Error("No se pudo reproducir el video configurado"))
+      }
+    });
+  }));
+  return youtubePlayerReady;
 }
 
 function initMusic(){
-  const embed=$("#youtubeEmbed");
   const songName=DATA.song.name || "Nuestra canción";
-  const baseEmbedUrl=getYouTubeEmbedUrl(DATA.song.youtubeUrl, false);
   $("#songSectionName").textContent=songName;
-  embed.title=songName;
-  if(baseEmbedUrl)embed.src=baseEmbedUrl;
   $("#enterBtn").onclick=async()=>{
     $("#welcome").classList.add("hidden");
     $("#app").classList.remove("hidden");
@@ -237,14 +276,17 @@ function initMusic(){
     window.scrollTo(0,0);
     burst(14);
     requestAnimationFrame(()=>mapInstance?.invalidateSize());
-    if(baseEmbedUrl){
-      embed.src=getYouTubeEmbedUrl(DATA.song.youtubeUrl, true);
+    try{
+      const player=await ensureYouTubePlayer();
+      player.unMute?.();
+      player.playVideo();
       updateMusicUi(true);
-    }else{
+    }catch(err){
       showToast("Configura una URL válida de YouTube para la canción.");
     }
   };
   $("#musicMini").onclick=()=>$("#cancion").scrollIntoView({behavior:"smooth",block:"start"});
+  ensureYouTubePlayer().catch(()=>null);
 }
 
 let mapInstance;
